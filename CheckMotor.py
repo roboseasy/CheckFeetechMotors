@@ -3,7 +3,7 @@ import time
 from lerobot.motors.feetech import FeetechMotorsBus
 from lerobot.motors.motors_bus import Motor, MotorNormMode
 
-PORT = "COM23"           # 환경에 맞게 수정
+PORT = "COM3"           # 환경에 맞게 수정
 MODEL = "sts3215"               # 대소문자 주의
 ID_LIST = [1, 2, 3, 4, 5, 6]    # 6축
 
@@ -120,6 +120,35 @@ def option_move(bus):
     bus.write("Goal_Position",  name, target, normalize=False)
     print(f"[ID {mid}] → Goal_Position = {target} 로 이동 명령 보냄")
 
+def option_move_all(bus):
+    """
+    6개 모터 모두에게 동일한 각도를 설정
+    """
+    # 각도 입력
+    try:
+        raw = input(" 모터 각도 (모든 모터에 적용): ").strip()
+        if raw == "":
+            print("입력이 없어 메뉴로 돌아갑니다.")
+            return
+        target = int(raw)
+    except ValueError:
+        print("정수 값을 입력하세요. 예) 2000")
+        return
+
+    # 각 모터에 대해 설정 및 이동 명령
+    for mid in ID_LIST:
+        name = motor_name(mid)
+        max_pos = setup_motor_runtime(bus, name)  # 필요 시 최소 설정 보증
+        
+        # 클램프
+        clamped_target = max(0, min(target, max_pos))
+        
+        # 이동 전 토크 ON 보장
+        _set_torque(bus, name, 1)
+        bus.write("Operating_Mode", name, 0, normalize=False)  # POSITION
+        bus.write("Goal_Position",  name, clamped_target, normalize=False)
+        print(f"[ID {mid}] → Goal_Position = {clamped_target} 로 이동 명령 보냄")
+
 def option_stream_all_positions(bus, hz=10.0):
     """
     6개 ID 모두를 실시간으로 읽기.
@@ -175,6 +204,7 @@ def main():
             print("\n=== 메뉴 ===")
             print("1) 모터 회전제어(각도 명령) - ID 지정")
             print("2) 실시간 모터 각도 읽기(6축 동시, Freewheel)")
+            print("3) 모든 모터 회전제어(각도 명령) - 각도 지정")
             print("0) 종료")
             choice = input("선택: ").strip()
 
@@ -182,6 +212,8 @@ def main():
                 option_move(bus)
             elif choice == "2":
                 option_stream_all_positions(bus, hz=10.0)
+            elif choice == "3":
+                option_move_all(bus)
             elif choice == "0":
                 print("종료합니다.")
                 break
