@@ -3,7 +3,7 @@ import time
 from lerobot.motors.feetech import FeetechMotorsBus
 from lerobot.motors.motors_bus import Motor, MotorNormMode
 
-PORT = "COM3"           # 환경에 맞게 수정
+PORT = "COM7"        # 환경에 맞게 수정
 MODEL = "sts3215"               # 대소문자 주의
 ID_LIST = [1, 2, 3, 4, 5, 6]    # 6축
 
@@ -93,16 +93,16 @@ def _set_torque(bus, name, val: int):
         except Exception:
             pass
 
-def option_move(bus):
+def option_move(bus, state_tracker):
     mid = choose_id()
     if mid is None:
         return
     name = motor_name(mid)
     max_pos = setup_motor_runtime(bus, name)  # 필요 시 최소 설정 보증
 
-    # 각도 입력
+    # 모터 값 입력
     try:
-        raw = input(" 모터 각도 : ").strip()
+        raw = input(" 모터 값 : ").strip()
         if raw == "":
             print("입력이 없어 메뉴로 돌아갑니다.")
             return
@@ -119,14 +119,15 @@ def option_move(bus):
     bus.write("Operating_Mode", name, 0, normalize=False)  # POSITION
     bus.write("Goal_Position",  name, target, normalize=False)
     print(f"[ID {mid}] → Goal_Position = {target} 로 이동 명령 보냄")
+    state_tracker["value"] = "개별 설정됨"
 
-def option_move_all(bus):
+def option_move_all(bus, state_tracker):
     """
-    6개 모터 모두에게 동일한 각도를 설정
+    6개 모터 모두에게 동일한 모터 값을 설정
     """
-    # 각도 입력
+    # 모터 값 입력
     try:
-        raw = input(" 모터 각도 (모든 모터에 적용): ").strip()
+        raw = input(" 모터 값 (모든 모터에 적용): ").strip()
         if raw == "":
             print("입력이 없어 메뉴로 돌아갑니다.")
             return
@@ -136,18 +137,29 @@ def option_move_all(bus):
         return
 
     # 각 모터에 대해 설정 및 이동 명령
+    print("모든 모터에 값 설정 중...")
+    success_count = 0
     for mid in ID_LIST:
         name = motor_name(mid)
-        max_pos = setup_motor_runtime(bus, name)  # 필요 시 최소 설정 보증
-        
-        # 클램프
-        clamped_target = max(0, min(target, max_pos))
-        
-        # 이동 전 토크 ON 보장
-        _set_torque(bus, name, 1)
-        bus.write("Operating_Mode", name, 0, normalize=False)  # POSITION
-        bus.write("Goal_Position",  name, clamped_target, normalize=False)
-        print(f"[ID {mid}] → Goal_Position = {clamped_target} 로 이동 명령 보냄")
+        try:
+            max_pos = setup_motor_runtime(bus, name)  # 필요 시 최소 설정 보증
+            
+            # 클램프
+            clamped_target = max(0, min(target, max_pos))
+            
+            # 이동 전 토크 ON 보장
+            _set_torque(bus, name, 1)
+            bus.write("Operating_Mode", name, 0, normalize=False)  # POSITION
+            bus.write("Goal_Position",  name, clamped_target, normalize=False)
+            print(f"[ID {mid}] → Goal_Position = {clamped_target} 로 이동 명령 보냄")
+            success_count += 1
+        except Exception as e:
+            print(f"[ID {mid}] 설정 실패: {e}")
+
+    if success_count == len(ID_LIST):
+        state_tracker["value"] = target
+    else:
+        state_tracker["value"] = "개별 설정됨"
 
 def option_stream_all_positions(bus, hz=10.0):
     """
@@ -195,25 +207,61 @@ def option_stream_all_positions(bus, hz=10.0):
 
 def main():
     bus = build_bus()
-    try:
-        # 필요 시 최초 1회 전체 축 세팅하려면 주석 해제
-        # for mid in ID_LIST:
-        #     setup_motor_runtime(bus, motor_name(mid))
+    # 현재 모터 값 상태를 추적하기 위한 딕셔너리 (pass-by-reference)
+    current_motor_value_state = {"value": 500}
 
+    # 시작 시 모든 모터를 1000으로 설정한 후 500으로 설정
+    print("프로그램 시작. 모든 모터를 초기 값(1000)으로 설정합니다...")
+    first_target = 1000
+    for mid in ID_LIST:
+        name = motor_name(mid)
+        try:
+            max_pos = setup_motor_runtime(bus, name)
+            clamped_target = max(0, min(first_target, max_pos))
+            _set_torque(bus, name, 1)
+            bus.write("Operating_Mode", name, 0, normalize=False)
+            bus.write("Goal_Position", name, clamped_target, normalize=False)
+            print(f"[ID {mid}] → 초기 값 {clamped_target} 설정 완료")
+        except Exception as e:
+            print(f"[ID {mid}] 초기 설정 실패: {e}")
+            current_motor_value_state["value"] = "오류 발생"
+    
+    # 잠시 대기 후 500으로 이동
+    print("\n모든 모터를 500으로 이동합니다...")
+    time.sleep(0.5)  # 모터가 1000에 도달하도록 잠시 대기
+    second_target = 500
+    for mid in ID_LIST:
+        name = motor_name(mid)
+        try:
+            max_pos = setup_motor_runtime(bus, name)
+            clamped_target = max(0, min(second_target, max_pos))
+            bus.write("Goal_Position", name, clamped_target, normalize=False)
+            print(f"[ID {mid}] → 값 {clamped_target} 설정 완료")
+        except Exception as e:
+            print(f"[ID {mid}] 설정 실패: {e}")
+            current_motor_value_state["value"] = "오류 발생"
+
+    try:
         while True:
             print("\n=== 메뉴 ===")
-            print("1) 모터 회전제어(각도 명령) - ID 지정")
+            state = current_motor_value_state['value']
+            if isinstance(state, int):
+                print(f"현재 모든 모터의 값은 {state}입니다.")
+            else:
+                print(f"현재 모터 값은 '{state}' 상태입니다.")
+
+            print("1) 모터 회전제어(모터 값 명령) -> ID 지정 -> 모터 값 지정")
             print("2) 실시간 모터 각도 읽기(6축 동시, Freewheel)")
-            print("3) 모든 모터 회전제어(각도 명령) - 각도 지정")
+            print("3) 모든 모터 회전제어(모터 값 명령) -> 모터 값 지정")
             print("0) 종료")
             choice = input("선택: ").strip()
 
             if choice == "1":
-                option_move(bus)
+                option_move(bus, current_motor_value_state)
             elif choice == "2":
                 option_stream_all_positions(bus, hz=10.0)
             elif choice == "3":
-                option_move_all(bus)
+                option_move_all(bus, current_motor_value_state)
             elif choice == "0":
                 print("종료합니다.")
                 break
@@ -221,6 +269,7 @@ def main():
                 print("올바른 번호를 선택하세요.")
     finally:
         # 종료 시 전체 축 토크 OFF 권장
+        print("종료 전 모든 모터 토크 OFF...")
         for mid in ID_LIST:
             name = motor_name(mid)
             try:
