@@ -93,6 +93,19 @@ def _set_torque(bus, name, val: int):
         except Exception:
             pass
 
+def read_all_positions(bus):
+    """모든 모터의 현재 위치를 읽어서 딕셔너리로 반환"""
+    positions = {}
+    for mid in ID_LIST:
+        name = motor_name(mid)
+        try:
+            pos = bus.read("Present_Position", name, normalize=False)
+            positions[mid] = int(pos)
+        except Exception as e:
+            print(f"[ID {mid}] 위치 읽기 실패: {e}")
+            positions[mid] = None
+    return positions
+
 def option_move(bus, state_tracker):
     mid = choose_id()
     if mid is None:
@@ -119,7 +132,9 @@ def option_move(bus, state_tracker):
     bus.write("Operating_Mode", name, 0, normalize=False)  # POSITION
     bus.write("Goal_Position",  name, target, normalize=False)
     print(f"[ID {mid}] → Goal_Position = {target} 로 이동 명령 보냄")
-    state_tracker["value"] = "개별 설정됨"
+    
+    # 상태 업데이트
+    state_tracker[mid] = target
 
 def option_move_all(bus, state_tracker):
     """
@@ -138,7 +153,6 @@ def option_move_all(bus, state_tracker):
 
     # 각 모터에 대해 설정 및 이동 명령
     print("모든 모터에 값 설정 중...")
-    success_count = 0
     for mid in ID_LIST:
         name = motor_name(mid)
         try:
@@ -152,14 +166,11 @@ def option_move_all(bus, state_tracker):
             bus.write("Operating_Mode", name, 0, normalize=False)  # POSITION
             bus.write("Goal_Position",  name, clamped_target, normalize=False)
             print(f"[ID {mid}] → Goal_Position = {clamped_target} 로 이동 명령 보냄")
-            success_count += 1
+            
+            # 상태 업데이트
+            state_tracker[mid] = clamped_target
         except Exception as e:
             print(f"[ID {mid}] 설정 실패: {e}")
-
-    if success_count == len(ID_LIST):
-        state_tracker["value"] = target
-    else:
-        state_tracker["value"] = "개별 설정됨"
 
 def option_stream_all_positions(bus, hz=10.0):
     """
@@ -207,48 +218,30 @@ def option_stream_all_positions(bus, hz=10.0):
 
 def main():
     bus = build_bus()
-    # 현재 모터 값 상태를 추적하기 위한 딕셔너리 (pass-by-reference)
-    current_motor_value_state = {"value": 500}
-
-    # 시작 시 모든 모터를 1000으로 설정한 후 500으로 설정
-    print("프로그램 시작. 모든 모터를 초기 값(1000)으로 설정합니다...")
-    first_target = 1000
-    for mid in ID_LIST:
-        name = motor_name(mid)
-        try:
-            max_pos = setup_motor_runtime(bus, name)
-            clamped_target = max(0, min(first_target, max_pos))
-            _set_torque(bus, name, 1)
-            bus.write("Operating_Mode", name, 0, normalize=False)
-            bus.write("Goal_Position", name, clamped_target, normalize=False)
-            print(f"[ID {mid}] → 초기 값 {clamped_target} 설정 완료")
-        except Exception as e:
-            print(f"[ID {mid}] 초기 설정 실패: {e}")
-            current_motor_value_state["value"] = "오류 발생"
     
-    # 잠시 대기 후 500으로 이동
-    print("\n모든 모터를 500으로 이동합니다...")
-    time.sleep(0.5)  # 모터가 1000에 도달하도록 잠시 대기
-    second_target = 500
+    print("모터 제어 프로그램 시작")
+    print("=" * 50)
+    
+    # 시작 시 모든 모터의 현재 값 읽기
+    print("\n모든 모터의 현재 위치를 읽는 중...")
+    current_motor_value_state = read_all_positions(bus)
+    
+    # 읽은 값 표시
+    print("\n현재 모터 값:")
     for mid in ID_LIST:
-        name = motor_name(mid)
-        try:
-            max_pos = setup_motor_runtime(bus, name)
-            clamped_target = max(0, min(second_target, max_pos))
-            bus.write("Goal_Position", name, clamped_target, normalize=False)
-            print(f"[ID {mid}] → 값 {clamped_target} 설정 완료")
-        except Exception as e:
-            print(f"[ID {mid}] 설정 실패: {e}")
-            current_motor_value_state["value"] = "오류 발생"
-
+        pos = current_motor_value_state.get(mid)
+        if pos is not None:
+            print(f"  ID {mid}: {pos}")
+        else:
+            print(f"  ID {mid}: 읽기 실패")
+    
     try:
         while True:
             print("\n=== 메뉴 ===")
-            state = current_motor_value_state['value']
-            if isinstance(state, int):
-                print(f"현재 모든 모터의 값은 {state}입니다.")
-            else:
-                print(f"현재 모터 값은 '{state}' 상태입니다.")
+            
+            # 현재 모터 값 표시
+            pos_str = ", ".join([f"ID{mid}={current_motor_value_state.get(mid, '?')}" for mid in ID_LIST])
+            print(f"현재 모터 값: {pos_str}")
 
             print("1) 모터 회전제어(모터 값 명령) -> ID 지정 -> 모터 값 지정")
             print("2) 실시간 모터 각도 읽기(6축 동시, Freewheel)")
@@ -260,6 +253,8 @@ def main():
                 option_move(bus, current_motor_value_state)
             elif choice == "2":
                 option_stream_all_positions(bus, hz=10.0)
+                # 실시간 읽기 후 현재 값 다시 읽기
+                current_motor_value_state = read_all_positions(bus)
             elif choice == "3":
                 option_move_all(bus, current_motor_value_state)
             elif choice == "0":
